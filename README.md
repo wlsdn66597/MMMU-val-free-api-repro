@@ -23,6 +23,8 @@ python -m mmmu_repro --help
 
 Codyssey에서 발급한 virtual key를 입력합니다. 입력은 화면과 명령 이력에 남지 않습니다. 키를 파일·Git·명령 인자에 넣지 않습니다.
 
+이미 `.env` 파일에 `CODYSSEY_API_KEY=...`를 저장했다면 `set -a; source .env; set +a`로 현재 셸에 불러올 수 있습니다. `.env.example`은 빈 예시 파일이며 Git 추적 대상이므로 키를 넣거나 불러오지 마세요. 이 프로그램은 `.env`를 자동으로 읽지 않습니다.
+
 ```bash
 read -rsp 'Codyssey API key: ' CODYSSEY_API_KEY; echo
 export CODYSSEY_API_KEY
@@ -66,9 +68,11 @@ bash scripts/run_mmmu_val_free.sh \
 | 추론 | BF16, vLLM.generate, 자유 생성 1회, 추가 CoT 없음 |
 | 메모리 운영 설정 | gpu_memory_utilization 0.90, max_num_seqs 1, max_num_batched_tokens 2048, chunked prefill, eager |
 | judge endpoint | `https://copa.codyssey.kr/v1/chat/completions` |
-| judge | `gpt-5.4-mini`, reasoning_effort none, temperature 0, max_completion_tokens 4096 |
+| judge | `gpt-5.4-mini`; 기본 요청은 Codyssey 콘솔 예시와 동일한 `model`·`messages` 두 필드 |
 
 논문 §5.11의 4B 설정(1.0 / 1.0 / 40 / 2.0)은 **Text-Centric Tasks**에 제시되어 있으므로 MMMU 공식 설정으로 간주하지 않습니다. 비교가 필요하면 새 결과 디렉터리에서 `--profile paper-text-4b-experimental`을 명시합니다. 기본값은 MMMU 공개 코드·README의 샘플링이며, 사용자 지정 seed 3407과 대체 judge 사용 등의 차이는 [출처와 변경점](docs/provenance.md)에 적었습니다. 공개 점수 67.40%의 완전 재현을 보장하는 저장소가 아닙니다.
+
+Judge의 `--judge-max-tokens`, `--reasoning-effort`, `--judge-temperature`는 Codyssey 게이트웨이가 해당 필드를 지원한다고 확인한 경우에만 명시합니다. 옵션을 명시하면 평가 설정과 캐시 식별자에 기록됩니다. API가 400을 반환할 때는 안전한 `error.code`·`error.param`·`error.type`만 표시하고 키와 원본 오류 본문은 출력하지 않습니다.
 
 ## 문맥·VRAM 확인
 

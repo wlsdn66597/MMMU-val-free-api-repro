@@ -191,8 +191,12 @@ class JudgeTests(unittest.TestCase):
             result = client("prompt")
         kwargs = session.post.call_args.kwargs
         self.assertFalse(kwargs["allow_redirects"])
-        self.assertEqual(kwargs["json"]["reasoning_effort"],"none")
-        self.assertEqual(kwargs["json"]["max_completion_tokens"],4096)
+        self.assertEqual(kwargs["json"],{"model":"gpt-5.4-mini","messages":[{"role":"user","content":"prompt"}]})
+        with patch.dict(os.environ,{"CODYSSEY_API_KEY":"unit-test-placeholder"}):
+            configured = JudgeClient(replace(JudgeConfig(),max_tokens=4096,reasoning_effort="none",temperature=0.0),session=session).payload("prompt")
+        self.assertEqual(configured["max_completion_tokens"],4096)
+        self.assertEqual(configured["reasoning_effort"],"none")
+        self.assertEqual(configured["temperature"],0.0)
         self.assertEqual(result["usage"]["total_tokens"],11)
         self.assertEqual(session.post.call_args.args[0],"https://copa.codyssey.kr/v1/chat/completions")
 
@@ -204,6 +208,17 @@ class JudgeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,"HTTP 401") as error:
                 client("prompt")
         session.post.assert_called_once()
+        self.assertNotIn("unit-test-placeholder",str(error.exception))
+
+    def test_400_reports_safe_gateway_code_without_secret(self):
+        response = Mock(status_code=400)
+        response.json.return_value = {"error":{"code":"unsupported_parameter","param":"reasoning_effort",
+                                                "message":"unit-test-placeholder"}}
+        session = Mock()
+        session.post.return_value = response
+        with patch.dict(os.environ,{"CODYSSEY_API_KEY":"unit-test-placeholder"}):
+            with self.assertRaisesRegex(RuntimeError,"param=reasoning_effort") as error:
+                JudgeClient(JudgeConfig(),session=session)("prompt")
         self.assertNotIn("unit-test-placeholder",str(error.exception))
 
     def test_length_response_is_not_scored(self):

@@ -32,9 +32,9 @@ def parser():
             p.add_argument("--api-base", default=JudgeConfig.api_base)
             p.add_argument("--judge-model", default=JudgeConfig.model)
             p.add_argument("--api-key-env", default=JudgeConfig.key_env)
-            p.add_argument("--judge-max-tokens", type=int, default=4096)
-            p.add_argument("--reasoning-effort", default="none", choices=("none", "low", "medium", "high"))
-            p.add_argument("--judge-temperature", type=float, default=0.0)
+            p.add_argument("--judge-max-tokens", type=int, default=None)
+            p.add_argument("--reasoning-effort", default=None, choices=("none", "low", "medium", "high"))
+            p.add_argument("--judge-temperature", type=float, default=None)
         if name == "judge":
             p.add_argument("--max-api-calls", type=int, default=900, help="Successful extraction calls in this invocation; pilot: 20")
     return root

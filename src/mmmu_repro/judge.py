@@ -15,16 +15,16 @@ class JudgeConfig:
     api_base: str = "https://copa.codyssey.kr/v1"
     model: str = "gpt-5.4-mini"
     key_env: str = "CODYSSEY_API_KEY"
-    max_tokens: int = 4096
-    reasoning_effort: str = "none"
-    temperature: float = 0.0
+    max_tokens: int | None = None
+    reasoning_effort: str | None = None
+    temperature: float | None = None
     retries: int = 3
 
     def validate(self):
         parts = urlsplit(self.api_base)
         if parts.scheme != "https" or not parts.netloc or parts.username or parts.password or parts.query or parts.fragment:
             raise ValueError("API base must be an HTTPS URL without embedded credentials/query/fragment")
-        if self.max_tokens < 1 or not 1 <= self.retries <= 5:
+        if (self.max_tokens is not None and self.max_tokens < 1) or not 1 <= self.retries <= 5:
             raise ValueError("Invalid judge token/retry limit")
         return self
 
@@ -51,9 +51,14 @@ class JudgeClient:
 
     def payload(self, prompt):
         c = self.config
-        return dict(model=c.model, messages=[dict(role="user", content=prompt)],
-                    max_completion_tokens=c.max_tokens, temperature=c.temperature,
-                    reasoning_effort=c.reasoning_effort, n=1, stream=False)
+        payload = dict(model=c.model, messages=[dict(role="user", content=prompt)])
+        if c.max_tokens is not None:
+            payload["max_completion_tokens"] = c.max_tokens
+        if c.temperature is not None:
+            payload["temperature"] = c.temperature
+        if c.reasoning_effort is not None:
+            payload["reasoning_effort"] = c.reasoning_effort
+        return payload
 
     def __call__(self, prompt):
         import requests
@@ -75,8 +80,20 @@ class JudgeClient:
                 self.sleep(min(2 ** attempt, 8))
                 continue
             if response.status_code != 200:
-                # Do not print gateway error bodies, which may echo a key/request.
-                raise RuntimeError(f"Judge HTTP {response.status_code}; check endpoint/model/key/parameter support. "
+                # Only expose structured diagnostic labels, never a raw gateway body.
+                details = []
+                try:
+                    error = response.json().get("error", {})
+                    if isinstance(error, dict):
+                        for field in ("code", "param", "type"):
+                            value = error.get(field)
+                            if isinstance(value, str) and value and len(value) <= 80 and \
+                               all(ch.isalnum() or ch in "_.-/" for ch in value) and self.key not in value:
+                                details.append(f"{field}={value}")
+                except (ValueError, TypeError, AttributeError):
+                    pass
+                suffix = (" (" + ", ".join(details) + ")") if details else ""
+                raise RuntimeError(f"Judge HTTP {response.status_code}{suffix}; check endpoint/model/key/parameter support. "
                                    "No automatic parameter changes or random answers.")
             try:
                 value = response.json()

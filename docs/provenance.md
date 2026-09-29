@@ -23,7 +23,7 @@ Open question reformatting with A=reference/B=Other Answers happens only in the 
 | Split | DEV_VAL loaded; combined and split metrics | validation 900 only, balanced coverage enforced |
 | Batch | all requests passed to generate | one request at a time for memory and checkpointing |
 | Engine | default runtime choices | BF16, eager, chunked prefill, explicit limits |
-| Judge | script names gpt-3.5-turbo-0125 | gpt-5.4-mini through Codyssey, reasoning_effort none |
+| Judge | script names gpt-3.5-turbo-0125 | gpt-5.4-mini through Codyssey; default request has only model and messages, as in the user's console example |
 | API retry | nested retries; random fallback | bounded transport retry; error stops, successful calls cached |
 | Judge output | heuristics; Z causes repeated attempts | exactly one valid letter or Z; Z is final unmatched |
 | Unknown dataset hash | downloaded without post-download verification | fail; accepted known revisions recorded |
