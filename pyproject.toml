@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mmmu-val-free-api-repro"
+version = "0.1.0"
+description = "Qwen3-VL MMMU validation free-generation and API extraction pipeline"
+requires-python = ">=3.10"
+dependencies = ["requests>=2.32,<3", "Pillow>=10"]
+
+[project.scripts]
+mmmu-repro = "mmmu_repro.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"mmmu_repro.vendor" = ["QWEN_LICENSE"]

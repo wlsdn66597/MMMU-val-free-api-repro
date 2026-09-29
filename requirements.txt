@@ -1,0 +1,11 @@
+# Linux / NVIDIA. Same core versions as the previously measured local baseline.
+# This is a direct-dependency pin set, not a claim that GPU inference was tested here.
+--extra-index-url https://download.pytorch.org/whl/cu130
+torch==2.13.0+cu130
+vllm==0.28.0
+transformers==5.16.1
+qwen-vl-utils==0.0.14
+Pillow==12.3.0
+numpy==2.2.6
+requests==2.32.5
+-e .
