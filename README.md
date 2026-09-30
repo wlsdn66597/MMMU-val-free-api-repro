@@ -184,6 +184,28 @@ cat results/qwen_free3407_ctx65536/local_model_qwen3_8b_v1/report.md
 
 기본 문맥 상한은 32768, 출력 상한은 16, 온도는 0, Qwen3 thinking은 비활성화합니다. 필요한 문맥 길이가 32768을 넘으면 자동으로 자르거나 최대값을 올리지 않습니다. Qwen3-8B의 32768 초과 입력은 YaRN 등 별도 설정과 GPU 메모리 확인이 필요합니다. 원본 VLM 추론이 GPU에서 완전히 끝난 뒤 실행하세요. 문항별 로컬 judge 응답은 `extractions.jsonl`에 즉시 저장되어 같은 설정으로 중단 지점부터 재개할 수 있습니다. `summary.json`과 `report.md`는 규칙, 규칙+로컬 모델, 규칙+API 점수를 같은 900문항 분모로 비교합니다. 무효 형식·출력 길이 제한은 미파싱으로 남고 오답에 포함합니다. 결과의 API 불일치 사례를 수동 검토해야 합니다.
 
+v1에서는 preflight가 만든 토큰을 문자열로 다시 디코딩하고 vLLM이 재토큰화하여, 사전 검사보다 실제 입력 토큰이 많아질 수 있었습니다. v2는 **같은 토큰 ID를 검사와 vLLM 입력에 모두 사용**합니다. v1 실행이 실패했다면 `git pull` 후 `local_model_qwen3_8b_v2`처럼 새 결과 디렉터리를 사용하세요. v2 사전 검사가 32768 초과를 보고하면 그 입력은 실제로 기본 문맥에 들어가지 않습니다.
+
+그 경우 24GB GPU에서는 [공식 4비트 AWQ 모델](https://huggingface.co/Qwen/Qwen3-8B-AWQ)과 명시적인 YaRN 확장을 별도 실험으로 사용할 수 있습니다. 아래 명령은 새 모델의 캐시를 확인하고 없으면 다운로드한 뒤, 원문을 자르지 않고 65536 문맥으로 검사·실행합니다. 먼저 preflight의 `required_context`가 65536 이하인지 확인하세요. AWQ 양자화와 YaRN은 원래 BF16 8B와 다른 평가 설정입니다.
+
+```bash
+python scripts/prepare_local_judge_model.py --model Qwen/Qwen3-8B-AWQ || \
+python scripts/prepare_local_judge_model.py --model Qwen/Qwen3-8B-AWQ --download-if-missing
+
+python scripts/evaluate_local_model_judge.py \
+  --model Qwen/Qwen3-8B-AWQ --max-model-len 65536 --rope-factor 2 \
+  --inference-dir results/qwen_free3407_ctx65536/inference \
+  --judge-dir results/qwen_free3407_ctx65536/judge \
+  --output-dir results/qwen_free3407_ctx65536/local_model_qwen3_8b_awq_yarn_v1 \
+  --preflight-only
+
+python scripts/evaluate_local_model_judge.py \
+  --model Qwen/Qwen3-8B-AWQ --max-model-len 65536 --rope-factor 2 \
+  --inference-dir results/qwen_free3407_ctx65536/inference \
+  --judge-dir results/qwen_free3407_ctx65536/judge \
+  --output-dir results/qwen_free3407_ctx65536/local_model_qwen3_8b_awq_yarn_v1
+```
+
 - `manifest.json`: 데이터 해시·선택 ID·모델·sampling·소스 해시. 변경된 설정으로 같은 폴더에 이어 쓰지 않습니다.
 - `preflight.json`: 문항별 입력 토큰·프롬프트/이미지 해시와 필요 문맥.
 - `predictions.jsonl`: Qwen 원문, 종료 원인, 실제 입출력 토큰, 문항별 추론 초.

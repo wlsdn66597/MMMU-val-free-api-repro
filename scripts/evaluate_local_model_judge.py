@@ -21,6 +21,25 @@ def pending_rows(rows):
     return [row for row in rows if not extract(row)["resolved"]]
 
 
+def token_prompt(tokenizer, prompt):
+    """Pass precisely the IDs counted in preflight to vLLM, without re-tokenizing decoded text."""
+    ids = tokenizer.apply_chat_template([{"role": "user", "content": prompt}],
+                                        tokenize=True, add_generation_prompt=True,
+                                        enable_thinking=False)
+    return {"prompt_token_ids": list(ids)}
+
+
+def rope_settings(max_model_len, rope_factor):
+    if max_model_len > 32768:
+        if rope_factor < max_model_len / 32768:
+            raise ValueError("Context above 32768 requires explicit YaRN factor covering max-model-len")
+        return {"rope_scaling": {"rope_type": "yarn", "factor": rope_factor,
+                                 "original_max_position_embeddings": 32768}}
+    if rope_factor != 1:
+        raise ValueError("YaRN factor is unnecessary for context <= 32768")
+    return {}
+
+
 def validate_saved(rows, records):
     pending = {row["id"]: row for row in pending_rows(rows)}
     seen = set()
@@ -98,6 +117,7 @@ def build_report(rows, records, api_records):
 
 
 def run(args):
+    engine_options = rope_settings(args.max_model_len, args.rope_factor)
     infer = Path(args.inference_dir).resolve()
     out = Path(args.output_dir).resolve()
     if out == infer or out in infer.parents or infer in out.parents:
@@ -115,11 +135,9 @@ def run(args):
     lengths = []
     for row in pending:
         prompt = extraction_input(row)[2]
-        messages = [{"role": "user", "content": prompt}]
-        tokens = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True,
-                                               enable_thinking=False)
-        lengths.append(len(tokens))
-        prompts[row["id"]] = tokenizer.decode(tokens, skip_special_tokens=False)
+        tokens_prompt = token_prompt(tokenizer, prompt)
+        lengths.append(len(tokens_prompt["prompt_token_ids"]))
+        prompts[row["id"]] = tokens_prompt
     maximum = max(lengths, default=0)
     print(f"[preflight] pending={len(pending)} max_input_tokens={maximum} "
           f"required_context={maximum+args.max_new_tokens} configured={args.max_model_len}", flush=True)
@@ -134,6 +152,7 @@ def run(args):
                     predictions_sha256=file_hash(infer / "predictions.jsonl"),
                     script_sha256=file_hash(__file__), max_model_len=args.max_model_len,
                     max_new_tokens=args.max_new_tokens, temperature=0, thinking=False,
+                    rope_factor=args.rope_factor,
                     prompt_policy="official-qwen-option-match-v1")
     api_records = read_jsonl(Path(args.judge_dir) / "extractions.jsonl") if args.judge_dir else []
     with RunLock(out):
@@ -146,7 +165,7 @@ def run(args):
             from vllm import LLM, SamplingParams
             llm = LLM(model=str(snapshot), dtype="bfloat16", max_model_len=args.max_model_len,
                       gpu_memory_utilization=args.gpu_memory_utilization, max_num_seqs=args.batch_size,
-                      trust_remote_code=False, enforce_eager=True)
+                      trust_remote_code=False, enforce_eager=True, **engine_options)
             sampling = SamplingParams(temperature=0, max_tokens=args.max_new_tokens)
             for start in range(0, len(todo), args.batch_size):
                 batch = todo[start:start+args.batch_size]
@@ -190,12 +209,14 @@ def main():
     parser.add_argument("--model", default="Qwen/Qwen3-8B")
     parser.add_argument("--revision", default="main")
     parser.add_argument("--max-model-len", type=int, default=32768)
+    parser.add_argument("--rope-factor", type=float, default=1.0,
+                        help="Explicit Qwen3 YaRN factor when max-model-len exceeds native 32768")
     parser.add_argument("--max-new-tokens", type=int, default=16)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--preflight-only", action="store_true")
     args = parser.parse_args()
-    if args.max_model_len < 128 or not 1 <= args.max_new_tokens <= 128 or not 1 <= args.batch_size <= 32 or not 0.1 <= args.gpu_memory_utilization <= 0.95:
+    if args.max_model_len < 128 or not 1 <= args.max_new_tokens <= 128 or not 1 <= args.batch_size <= 32 or not 0.1 <= args.gpu_memory_utilization <= 0.95 or not 1 <= args.rope_factor <= 4:
         parser.error("Invalid context, token, batch, or memory setting")
     print(json.dumps(run(args), indent=2, ensure_ascii=False))
 

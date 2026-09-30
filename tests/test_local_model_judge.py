@@ -3,13 +3,33 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.evaluate_local_model_judge import build_report, parse_letter, pending_rows, validate_saved
+from scripts.evaluate_local_model_judge import (build_report, parse_letter, pending_rows,
+                                               rope_settings, token_prompt, validate_saved)
 from scripts.prepare_local_judge_model import complete, resolve
 from mmmu_repro.common import digest
 from mmmu_repro.judge import extraction_input
 
 
 class LocalModelJudgeTests(unittest.TestCase):
+    def test_preflight_ids_are_exact_ids_sent_to_engine(self):
+        class Tokenizer:
+            def apply_chat_template(self, messages, **kwargs):
+                self.messages = messages
+                self.kwargs = kwargs
+                return [1, 2, 3]
+
+            def decode(self, *args, **kwargs):
+                raise AssertionError("Decoding would cause re-tokenization")
+
+        tokenizer = Tokenizer()
+        self.assertEqual(token_prompt(tokenizer, "original prompt"), {"prompt_token_ids": [1, 2, 3]})
+        self.assertEqual(tokenizer.messages[0]["content"], "original prompt")
+        self.assertFalse(tokenizer.kwargs["enable_thinking"])
+        self.assertEqual(rope_settings(32768, 1), {})
+        self.assertEqual(rope_settings(65536, 2)["rope_scaling"]["factor"], 2)
+        with self.assertRaises(ValueError):
+            rope_settings(65536, 1)
+
     def test_model_file_check_requires_every_shard(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
