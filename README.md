@@ -121,6 +121,16 @@ cat results/qwen_free3407/judge/summary.json
 cat results/qwen_free3407/judge/report.md
 ```
 
+같은 Qwen 답변을 **API 호출 전(로컬 규칙만)**과 **API 추출 후**로 나눠 보려면 다음을 실행합니다. 원격 요청은 하지 않습니다. 채점 중에는 `after_api.accuracy_pct`가 `null`이고, `current_minimum_pct`는 현재 확인된 정답만 반영한 하한입니다. `before_api`는 규칙으로 읽지 못한 답을 전체 900문항 분모에서 오답으로 계산합니다.
+
+```bash
+python scripts/report_api_effect.py \
+  --inference-dir results/qwen_free3407/inference \
+  --judge-dir results/qwen_free3407/judge
+```
+
+`overall`, `multiple_choice`, `open`에서 규칙 추출 수·API 대상/처리/정답/남은 수와 전후 정확도를 확인할 수 있습니다. API는 모델 답을 수정하지 않으므로 전후 차이는 **답 추출·채점 범위의 차이**입니다.
+
 - `manifest.json`: 데이터 해시·선택 ID·모델·sampling·소스 해시. 변경된 설정으로 같은 폴더에 이어 쓰지 않습니다.
 - `preflight.json`: 문항별 입력 토큰·프롬프트/이미지 해시와 필요 문맥.
 - `predictions.jsonl`: Qwen 원문, 종료 원인, 실제 입출력 토큰, 문항별 추론 초.
