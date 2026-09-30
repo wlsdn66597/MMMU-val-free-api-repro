@@ -27,7 +27,9 @@ class LocalModelJudgeTests(unittest.TestCase):
         self.assertFalse(tokenizer.kwargs["enable_thinking"])
         self.assertTrue(tokenizer.kwargs["return_dict"])
         self.assertEqual(rope_settings(32768, 1), {})
-        self.assertEqual(rope_settings(65536, 2)["rope_scaling"]["factor"], 2)
+        override = rope_settings(65536, 2)
+        self.assertEqual(override["hf_overrides"]["rope_parameters"]["factor"], 2)
+        self.assertNotIn("rope_scaling", override)
         with self.assertRaises(ValueError):
             rope_settings(65536, 1)
         class MalformedTokenizer:

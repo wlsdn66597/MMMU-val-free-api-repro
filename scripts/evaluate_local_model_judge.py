@@ -41,8 +41,10 @@ def rope_settings(max_model_len, rope_factor):
     if max_model_len > 32768:
         if rope_factor < max_model_len / 32768:
             raise ValueError("Context above 32768 requires explicit YaRN factor covering max-model-len")
-        return {"rope_scaling": {"rope_type": "yarn", "factor": rope_factor,
-                                 "original_max_position_embeddings": 32768}}
+        # vLLM 0.28 accepts RoPE extension through HF config overrides.
+        return {"hf_overrides": {"rope_parameters": {
+            "rope_type": "yarn", "factor": rope_factor,
+            "original_max_position_embeddings": 32768, "rope_theta": 1000000}}}
     if rope_factor != 1:
         raise ValueError("YaRN factor is unnecessary for context <= 32768")
     return {}

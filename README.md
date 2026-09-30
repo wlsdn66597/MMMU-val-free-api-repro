@@ -190,6 +190,8 @@ v2에서 `max_input_tokens=2`로 표시된 경우는 tokenizer가 반환한 `inp
 
 그 경우 24GB GPU에서는 [공식 4비트 AWQ 모델](https://huggingface.co/Qwen/Qwen3-8B-AWQ)과 명시적인 YaRN 확장을 별도 실험으로 사용할 수 있습니다. 아래 명령은 새 모델의 캐시를 확인하고 없으면 다운로드한 뒤, 원문을 자르지 않고 65536 문맥으로 검사·실행합니다. 먼저 preflight의 `required_context`가 65536 이하인지 확인하세요. AWQ 양자화와 YaRN은 원래 BF16 8B와 다른 평가 설정입니다.
 
+vLLM 0.28.0은 `LLM(..., rope_scaling=...)` 인자를 받지 않습니다. 현재 스크립트는 해당 버전의 [문맥 확장 방식](https://docs.vllm.ai/en/v0.28.0/features/context_extension/)인 `hf_overrides={"rope_parameters": ...}`를 사용합니다. `unexpected keyword argument 'rope_scaling'` 오류가 났다면 `git pull` 후 새 출력 폴더로 실행하세요.
+
 ```bash
 python scripts/prepare_local_judge_model.py --model Qwen/Qwen3-8B-AWQ || \
 python scripts/prepare_local_judge_model.py --model Qwen/Qwen3-8B-AWQ --download-if-missing
