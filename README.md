@@ -152,6 +152,38 @@ API 결과와도 비교하려면 같은 명령에 `--judge-dir results/qwen_free
 
 이 파서는 공개 Qwen 규칙에 대한 추가 실험으로 따로 보고합니다. 실제 답변에서 복구율과 추출 오류를 확인해야 하며, 미파싱 감소만으로 추출이 정확하다고 판단하지 않습니다. API와의 불일치는 검토 대상이며 어느 쪽이 맞는지의 증거 자체는 아닙니다. 평가·추론 본체를 수정하지 않으므로 기존 채점의 재개 설정에 영향을 주지 않습니다.
 
+## 별도 로컬 모델 judge (Qwen3-8B)
+
+저장된 VLM 응답에 먼저 기존 공개 규칙을 적용하고, **미파싱 응답에만** 텍스트 모델 `Qwen/Qwen3-8B`를 호출합니다. VLM을 다시 실행하거나 Codyssey API를 호출하지 않습니다. 주관식은 공개 judge와 같이 평가 시점에 정답을 선택지 A, `Other Answers`를 B로 넣어 의미 일치를 묻습니다. 따라서 추가 규칙 파서의 주관식 표면 일치 점수와 평가 기준이 다릅니다. GPT-3.5 Turbo와 같은 모델이나 점수를 재현한다는 뜻은 아닙니다.
+
+먼저 GPU 컴퓨터의 **현재 Hugging Face 캐시**를 확인합니다. `HF_HOME`을 사용했다면 모델 다운로드와 추론에서 같은 값을 유지하세요. 없거나 파일이 불완전하면 두 번째 명령이 다운로드합니다. 모델 파일은 Git에 넣지 않습니다.
+
+```bash
+python scripts/prepare_local_judge_model.py
+python scripts/prepare_local_judge_model.py --download-if-missing
+```
+
+첫 명령이 `state: cached`이면 두 번째 명령은 생략할 수 있습니다. 로컬 모델 디렉터리가 별도로 있다면 두 명령과 아래 평가 명령에 `--model /path/to/Qwen3-8B`를 지정하세요. `snapshot`과 revision은 결과 manifest에 남습니다.
+
+```bash
+# 모델 로드 전 전체 judge 입력 길이 확인. 초과하면 답변을 자르지 않고 중단합니다.
+python scripts/evaluate_local_model_judge.py \
+  --inference-dir results/qwen_free3407_ctx65536/inference \
+  --judge-dir results/qwen_free3407_ctx65536/judge \
+  --output-dir results/qwen_free3407_ctx65536/local_model_qwen3_8b_v1 \
+  --preflight-only
+
+# preflight 성공 후: GPU 모델 로드, 미파싱 문항만 추출, API 기록과 비교
+python scripts/evaluate_local_model_judge.py \
+  --inference-dir results/qwen_free3407_ctx65536/inference \
+  --judge-dir results/qwen_free3407_ctx65536/judge \
+  --output-dir results/qwen_free3407_ctx65536/local_model_qwen3_8b_v1
+
+cat results/qwen_free3407_ctx65536/local_model_qwen3_8b_v1/report.md
+```
+
+기본 문맥 상한은 32768, 출력 상한은 16, 온도는 0, Qwen3 thinking은 비활성화합니다. 필요한 문맥 길이가 32768을 넘으면 자동으로 자르거나 최대값을 올리지 않습니다. Qwen3-8B의 32768 초과 입력은 YaRN 등 별도 설정과 GPU 메모리 확인이 필요합니다. 원본 VLM 추론이 GPU에서 완전히 끝난 뒤 실행하세요. 문항별 로컬 judge 응답은 `extractions.jsonl`에 즉시 저장되어 같은 설정으로 중단 지점부터 재개할 수 있습니다. `summary.json`과 `report.md`는 규칙, 규칙+로컬 모델, 규칙+API 점수를 같은 900문항 분모로 비교합니다. 무효 형식·출력 길이 제한은 미파싱으로 남고 오답에 포함합니다. 결과의 API 불일치 사례를 수동 검토해야 합니다.
+
 - `manifest.json`: 데이터 해시·선택 ID·모델·sampling·소스 해시. 변경된 설정으로 같은 폴더에 이어 쓰지 않습니다.
 - `preflight.json`: 문항별 입력 토큰·프롬프트/이미지 해시와 필요 문맥.
 - `predictions.jsonl`: Qwen 원문, 종료 원인, 실제 입출력 토큰, 문항별 추론 초.
