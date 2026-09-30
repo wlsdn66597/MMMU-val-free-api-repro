@@ -131,6 +131,27 @@ python scripts/report_api_effect.py \
 
 `overall`, `multiple_choice`, `open`에서 규칙 추출 수·API 대상/처리/정답/남은 수와 전후 정확도를 확인할 수 있습니다. API는 모델 답을 수정하지 않으므로 전후 차이는 **답 추출·채점 범위의 차이**입니다.
 
+## 추가 로컬 파서 비교 (API 호출 없음)
+
+공개 규칙은 답변 전체에서 여러 선택지 문자가 발견되면 미파싱으로 남길 수 있습니다. `scripts/evaluate_local_parser.py`는 저장된 900개 답변을 읽어 **공개 규칙이 미파싱한 문항에만** 추가 파서를 적용하는 별도 실험입니다. 새 추론·API 요청·의존성 설치 없이 실행합니다.
+
+```bash
+python scripts/evaluate_local_parser.py \
+  --inference-dir results/qwen_free3407_ctx65536/inference \
+  --output-dir results/qwen_free3407_ctx65536/local_parser_v1
+
+cat results/qwen_free3407_ctx65536/local_parser_v1/report.md
+```
+
+API 결과와도 비교하려면 같은 명령에 `--judge-dir results/qwen_free3407_ctx65536/judge`를 추가합니다. 완료된 API 기록만 읽으며, API 처리가 끝나지 않았으면 API 최종 정확도는 `null`입니다. 같은 파서·같은 입력으로 다시 실행하면 이 별도 보고서만 갱신됩니다. 파서 코드나 입력이 바뀌면 새로운 출력 디렉터리를 사용합니다.
+
+- 객관식: `Final answer: B`, `Answer: (B)`, 마지막의 `\boxed{B}`, 마지막 줄의 독립된 선택지 문자·정확한 선택지 문구를 인식합니다. 복수 답·추측·거절·출력 잘림은 보수적으로 미파싱 상태로 둡니다. 풀이에서 마지막에 언급된 선택지를 임의로 고르지 않습니다.
+- 주관식: 명시된 최종 답이나 마지막 boxed 식을 먼저 추출합니다. 정답은 추출 함수에 전달하지 않습니다. 이후 문자열과 간단한 숫자·분수의 정확한 동치로 채점합니다. 단위 변환·복잡한 수식 동치는 지원하지 않으므로 API 의미 비교와 채점 범위가 다릅니다.
+- `report.md`, `summary.json`: 기존 규칙 / 규칙+추가 파서 / 규칙+API 점수, 미파싱 수, 추가 추출 중 정답·오답 수, 출력 종료 원인별 기존 미파싱 수.
+- `records.jsonl`: 문항별 추출 방법·근거·정답 여부와 원문 마지막 1600자. `unresolved.jsonl`: 여전히 미파싱인 문항. `api_disagreements.jsonl`: 추가 파서와 API가 다른 문항(객관식은 선택지, 주관식은 정오 판단 비교).
+
+이 파서는 공개 Qwen 규칙에 대한 추가 실험으로 따로 보고합니다. 실제 답변에서 복구율과 추출 오류를 확인해야 하며, 미파싱 감소만으로 추출이 정확하다고 판단하지 않습니다. API와의 불일치는 검토 대상이며 어느 쪽이 맞는지의 증거 자체는 아닙니다. 평가·추론 본체를 수정하지 않으므로 기존 채점의 재개 설정에 영향을 주지 않습니다.
+
 - `manifest.json`: 데이터 해시·선택 ID·모델·sampling·소스 해시. 변경된 설정으로 같은 폴더에 이어 쓰지 않습니다.
 - `preflight.json`: 문항별 입력 토큰·프롬프트/이미지 해시와 필요 문맥.
 - `predictions.jsonl`: Qwen 원문, 종료 원인, 실제 입출력 토큰, 문항별 추론 초.
