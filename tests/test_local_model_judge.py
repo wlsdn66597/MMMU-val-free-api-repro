@@ -16,7 +16,7 @@ class LocalModelJudgeTests(unittest.TestCase):
             def apply_chat_template(self, messages, **kwargs):
                 self.messages = messages
                 self.kwargs = kwargs
-                return [1, 2, 3]
+                return {"input_ids": [1, 2, 3], "attention_mask": [1, 1, 1]}
 
             def decode(self, *args, **kwargs):
                 raise AssertionError("Decoding would cause re-tokenization")
@@ -25,10 +25,16 @@ class LocalModelJudgeTests(unittest.TestCase):
         self.assertEqual(token_prompt(tokenizer, "original prompt"), {"prompt_token_ids": [1, 2, 3]})
         self.assertEqual(tokenizer.messages[0]["content"], "original prompt")
         self.assertFalse(tokenizer.kwargs["enable_thinking"])
+        self.assertTrue(tokenizer.kwargs["return_dict"])
         self.assertEqual(rope_settings(32768, 1), {})
         self.assertEqual(rope_settings(65536, 2)["rope_scaling"]["factor"], 2)
         with self.assertRaises(ValueError):
             rope_settings(65536, 1)
+        class MalformedTokenizer:
+            def apply_chat_template(self, *args, **kwargs):
+                return {"input_ids": ["input_ids", "attention_mask"]}
+        with self.assertRaises(TypeError):
+            token_prompt(MalformedTokenizer(), "original prompt")
 
     def test_model_file_check_requires_every_shard(self):
         with tempfile.TemporaryDirectory() as directory:

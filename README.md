@@ -186,6 +186,8 @@ cat results/qwen_free3407_ctx65536/local_model_qwen3_8b_v1/report.md
 
 v1에서는 preflight가 만든 토큰을 문자열로 다시 디코딩하고 vLLM이 재토큰화하여, 사전 검사보다 실제 입력 토큰이 많아질 수 있었습니다. v2는 **같은 토큰 ID를 검사와 vLLM 입력에 모두 사용**합니다. v1 실행이 실패했다면 `git pull` 후 `local_model_qwen3_8b_v2`처럼 새 결과 디렉터리를 사용하세요. v2 사전 검사가 32768 초과를 보고하면 그 입력은 실제로 기본 문맥에 들어가지 않습니다.
 
+v2에서 `max_input_tokens=2`로 표시된 경우는 tokenizer가 반환한 `input_ids` 대신 딕셔너리 키를 센 오류입니다. 수정된 버전은 `input_ids`를 명시적으로 꺼내 정수 토큰만 허용합니다. 이 값으로 모델을 실행하지 말고 `git pull` 후 `local_model_qwen3_8b_v3`처럼 새 결과 디렉터리에서 preflight를 다시 수행하세요.
+
 그 경우 24GB GPU에서는 [공식 4비트 AWQ 모델](https://huggingface.co/Qwen/Qwen3-8B-AWQ)과 명시적인 YaRN 확장을 별도 실험으로 사용할 수 있습니다. 아래 명령은 새 모델의 캐시를 확인하고 없으면 다운로드한 뒤, 원문을 자르지 않고 65536 문맥으로 검사·실행합니다. 먼저 preflight의 `required_context`가 65536 이하인지 확인하세요. AWQ 양자화와 YaRN은 원래 BF16 8B와 다른 평가 설정입니다.
 
 ```bash

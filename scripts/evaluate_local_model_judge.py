@@ -1,6 +1,7 @@
 """Apply a separate local Qwen3-8B judge to Qwen-rule-unparsed saved responses."""
 import argparse
 from collections import Counter
+from collections.abc import Mapping
 import json
 from pathlib import Path
 
@@ -23,9 +24,16 @@ def pending_rows(rows):
 
 def token_prompt(tokenizer, prompt):
     """Pass precisely the IDs counted in preflight to vLLM, without re-tokenizing decoded text."""
-    ids = tokenizer.apply_chat_template([{"role": "user", "content": prompt}],
-                                        tokenize=True, add_generation_prompt=True,
-                                        enable_thinking=False)
+    encoded = tokenizer.apply_chat_template([{"role": "user", "content": prompt}],
+                                            tokenize=True, add_generation_prompt=True,
+                                            enable_thinking=False, return_dict=True)
+    ids = encoded["input_ids"] if isinstance(encoded, Mapping) else encoded
+    if hasattr(ids, "tolist"):
+        ids = ids.tolist()
+    if isinstance(ids, (list, tuple)) and len(ids) == 1 and isinstance(ids[0], (list, tuple)):
+        ids = ids[0]
+    if not isinstance(ids, (list, tuple)) or not ids or any(not isinstance(value, int) for value in ids):
+        raise TypeError("Tokenizer must return nonempty integer input_ids; preflight stopped")
     return {"prompt_token_ids": list(ids)}
 
 
