@@ -24,7 +24,7 @@ def run(args):
         raise ValueError("Cached extraction is locked; wait until its process has finished")
     manifest_path = cached / "blind_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("policy") not in ("blind-final-answer-v1", POLICY):
+    if manifest.get("policy") not in ("blind-final-answer-v1", "blind-final-answer-v2", POLICY):
         raise ValueError("Only reference-blind extraction caches can be revalidated")
     scope = manifest["scope"]
     if scope not in ("all", "open", "multiple-choice"):

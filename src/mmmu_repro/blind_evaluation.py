@@ -6,7 +6,7 @@ import json
 import re
 import unicodedata
 
-POLICY = "blind-final-answer-v2"
+POLICY = "blind-final-answer-v3"
 
 
 def extraction_view(row):
@@ -69,11 +69,11 @@ def option_letter(answer, choices):
     if text in choices:
         return text
     label = re.fullmatch(r"\(?([A-Z])\)?\s*[.:)]\s*(.+)", text)
-    if label and label[1] in choices and quote_key(label[2]).casefold() == quote_key(choices[label[1]]).casefold():
+    if label and label[1] in choices and quote_key(surface(label[2])).casefold() == quote_key(surface(choices[label[1]])).casefold():
         return label[1]
     # Exact unique option text is also unambiguous; no fuzzy matching or solving.
     matches = [key for key, option in choices.items()
-               if quote_key(option).casefold() == quote_key(text).casefold()]
+               if quote_key(surface(option)).casefold() == quote_key(surface(text)).casefold()]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -128,7 +128,7 @@ def parse_output(text, finish_reason, view):
         if literal in view["choices"] and literal != answer:
             return dict(answer=None, evidence=evidence, status="option_evidence_conflict")
         matches = [key for key, option in view["choices"].items()
-                   if quote_key(option).casefold() == quote_key(evidence).casefold()]
+                   if quote_key(surface(option)).casefold() == quote_key(surface(evidence)).casefold()]
         if len(matches) == 1 and matches[0] != answer:
             return dict(answer=None, evidence=evidence, status="option_evidence_conflict")
         selected = re.findall(r"(?:final\s+answer|correct\s+answer|answer|option|choice)\s*:\s*\(?([A-Z])\)?(?:[.\s]|$)",

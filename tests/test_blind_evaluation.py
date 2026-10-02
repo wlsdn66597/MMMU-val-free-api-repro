@@ -84,6 +84,17 @@ class BlindEvaluationTests(unittest.TestCase):
                                  question_type="multiple-choice", choices=choices)["answer"])
         self.assertIsNone(extract("A", "Final Answer: **B. $12,000**", "Final Answer: **B. $12,000**",
                                  question_type="multiple-choice", choices=choices)["answer"])
+        self.assertEqual(extract("B. Lateral geniculate.", "Final Answer: B. Lateral geniculate.",
+                                 "Final Answer: B. Lateral geniculate.", question_type="multiple-choice",
+                                 choices={"A": "Retina.", "B": "Lateral geniculate."})["answer"], "B")
+        self.assertIsNone(extract("A. Lateral geniculate.", "Lateral geniculate", "Lateral geniculate",
+                                 question_type="multiple-choice",
+                                 choices={"A": "Retina.", "B": "Lateral geniculate."})["answer"])
+        self.assertIsNone(extract("A", "Lateral geniculate", "Lateral geniculate",
+                                 question_type="multiple-choice",
+                                 choices={"A": "Retina.", "B": "Lateral geniculate."})["answer"])
+        self.assertEqual(extract("B. 8%", "Final Answer: B. 8%", "Final Answer: B. 8%",
+                                 question_type="multiple-choice", choices={"A":"10%.","B":"8%."})["answer"], "B")
 
     def test_concise_scoring_stays_separate_from_reasoning(self):
         self.assertTrue(score_open("The industry's price-to-earnings (P₀/E₁) ratio is 30.", "30.0")["exact_correct"])
