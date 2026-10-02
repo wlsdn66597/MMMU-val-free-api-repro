@@ -231,6 +231,41 @@ cat results/qwen_free3407_tok4096_ctx65536/open_position_audit_v1/report.md
 
 `original_only`는 정답이 A일 때만 맞은 문항 수, `swapped_only`는 B일 때만 맞은 문항 수입니다. `always_A`는 위치를 바꿔도 A를 고른 문항 수입니다. `cases.jsonl`에 문항별 원본·교체 판정과 답변 끝부분을 기록하므로 위치에 민감한 사례를 직접 검토할 수 있습니다. 위치 민감도만으로 어느 판정이 의미상 옳은지는 확정할 수 없습니다. 8192토큰 실행도 같은 명령에서 세 경로의 `tok4096`을 `tok8192`로 바꿔 점검할 수 있습니다.
 
+### 정답을 보여주지 않는 별도 최종 답 추출
+
+`evaluate_blind_local_judge.py`는 저장된 응답 전체를 다시 추출합니다. 기존 Qwen 규칙의 판정을 재사용하지 않습니다. 객관식은 질문·원래 선택지·응답, 주관식은 질문·응답만 추출 모델에 전달합니다. 입력 필드를 명시적으로 제한하여 정답·이전 채점·API 판정은 전달하지 않습니다. 추출 모델은 문제를 새로 풀지 않고 응답에 명시된 최종 답을 JSON으로 반환하며, 원문에 실제 있는 인용 근거를 검증합니다. 주관식 답을 새로 계산하거나 임의로 고쳐 쓰면 무효 처리합니다.
+
+기본값은 기존 캐시의 `Qwen/Qwen3-8B-AWQ`, YaRN 2, 문맥 65536, thinking 비활성화, 온도 0, seed 3407입니다. 인용 근거를 포함하는 JSON을 받으므로 추출 모델의 출력 한도는 256입니다. 이는 VLM의 출력 토큰 설정을 바꾸지 않습니다. 추가 의존성 설치·API 키·VLM 재추론 없이 실행합니다.
+
+```bash
+# 먼저 주관식 53문항의 입력 길이를 검사합니다.
+python scripts/evaluate_blind_local_judge.py \
+  --inference-dir results/qwen_free3407_tok4096_ctx65536/inference \
+  --output-dir results/qwen_free3407_tok4096_ctx65536/blind_open_v1 \
+  --scope open --preflight-only
+
+python scripts/evaluate_blind_local_judge.py \
+  --inference-dir results/qwen_free3407_tok4096_ctx65536/inference \
+  --output-dir results/qwen_free3407_tok4096_ctx65536/blind_open_v1 \
+  --scope open
+
+# 900문항 전체 평가: 별도 폴더를 사용합니다.
+python scripts/evaluate_blind_local_judge.py \
+  --inference-dir results/qwen_free3407_tok4096_ctx65536/inference \
+  --output-dir results/qwen_free3407_tok4096_ctx65536/blind_all_v1
+
+cat results/qwen_free3407_tok4096_ctx65536/blind_all_v1/report.md
+
+# 추출 완료 뒤 CPU에서 같은 추출을 재채점할 수 있습니다.
+python scripts/evaluate_blind_local_judge.py \
+  --inference-dir results/qwen_free3407_tok4096_ctx65536/inference \
+  --output-dir results/qwen_free3407_tok4096_ctx65536/blind_all_v1 --score-only
+```
+
+`extractions.jsonl`에는 정답을 포함하지 않는 추출 결과·인용·원문·상태를 저장합니다. `scored_records.jsonl`에서만 정답과 비교하며, `report.md`는 정확한 수치/표면 일치 점수와 기준답의 소수 정밀도에 맞춘 점수를 각각 보여줍니다. 여러 허용답을 나타내는 리스트 문자열은 개별 답으로 비교합니다. 분수·제곱근은 제한된 산술 문법으로 처리합니다. 소수 기준답은 표시된 소수 정밀도로 반올림(half-up)을 허용하는 별도 점수를 제공하고, 정수·분수 기준답에는 정확한 수치 일치를 요구합니다. 상대 오차 허용은 없습니다.
+
+단위 변환은 수행하지 않습니다. 기준답에 단위가 있으면 일치해야 하고, 기준답이 단위 없는 수치이면 인식 가능한 응답 단위를 제외한 크기를 비교하되 단위 검토 대상으로 기록합니다. 백분율은 비율로 변환합니다. 미파싱·무효 JSON·원문에 없는 인용은 오답에 포함하고 상태별 수를 보고합니다. 인용이 있다고 추출이 항상 옳은 것은 아니므로 결과를 수동 검토해야 합니다. 이 점수는 정답 추출과 채점을 분리한 추가 평가이며 기존 공식 방식 점수와 구분해 기록합니다.
+
 - `manifest.json`: 데이터 해시·선택 ID·모델·sampling·소스 해시. 변경된 설정으로 같은 폴더에 이어 쓰지 않습니다.
 - `preflight.json`: 문항별 입력 토큰·프롬프트/이미지 해시와 필요 문맥.
 - `predictions.jsonl`: Qwen 원문, 종료 원인, 실제 입출력 토큰, 문항별 추론 초.
