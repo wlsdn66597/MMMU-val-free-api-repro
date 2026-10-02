@@ -6,7 +6,7 @@ import json
 import re
 import unicodedata
 
-POLICY = "blind-final-answer-v1"
+POLICY = "blind-final-answer-v2"
 
 
 def extraction_view(row):
@@ -44,6 +44,64 @@ def compact(value):
     return re.sub(r"\s+", " ", str(value)).strip()
 
 
+def quote_key(value):
+    """Ignore presentation markup only; never delete words or numeric content."""
+    text = unicodedata.normalize("NFKC", str(value))
+    text = re.sub(r"\*\*|__|`|\$", "", text)
+    text = re.sub(r"\\[()\[\]]", "", text)
+    text = re.sub(r"\\(?:boxed|text|mathrm|mathbf)\s*\{", "{", text)
+    text = text.replace(r"\,", " ").replace(r"\;", " ").replace(r"\!", "")
+    text = re.sub(r"(?m)^\s*(?:#+\s*|>\s*)", "", text)
+    text = text.replace("{", "").replace("}", "")
+    return compact(text)
+
+
+def contains_quote(needle, haystack):
+    needle, haystack = quote_key(needle), quote_key(haystack)
+    if not needle:
+        return False
+    # '1' is not evidence for '10', nor is 'A' evidence from 'Answer'.
+    return re.search(r"(?<![\w./])" + re.escape(needle) + r"(?!\w|[./]\d)", haystack) is not None
+
+
+def option_letter(answer, choices):
+    text = surface(answer)
+    if text in choices:
+        return text
+    label = re.fullmatch(r"\(?([A-Z])\)?\s*[.:)]\s*(.+)", text)
+    if label and label[1] in choices and quote_key(label[2]).casefold() == quote_key(choices[label[1]]).casefold():
+        return label[1]
+    # Exact unique option text is also unambiguous; no fuzzy matching or solving.
+    matches = [key for key, option in choices.items()
+               if quote_key(option).casefold() == quote_key(text).casefold()]
+    return matches[0] if len(matches) == 1 else None
+
+
+def answer_payload(answer):
+    """Strip an answer label, or a single declarative scalar-answer sentence."""
+    text = surface(answer)
+    text = re.sub(r"^(?:✅\s*)?(?:(?:the\s+)?(?:correct\s+|final\s+)?answer|value)\s*:\s*", "", text, flags=re.I)
+    text = surface(text)
+    sentence = re.fullmatch(r"(?:The|A) [^\n.!?]+? (?:is|equals) (.+)", text)
+    if sentence and scalar(sentence[1])[0] is not None:
+        return sentence[1]
+    return text
+
+
+def supported_open_answer(answer, evidence):
+    payload = answer_payload(answer)
+    # Permit format-equivalent scalars only when the entire cited payload is a
+    # scalar. Never search intermediate numbers in a derivation for a match.
+    cited = answer_payload(evidence)
+    a, au, _, ap = scalar(payload)
+    e, eu, _, ep = scalar(cited)
+    if a is not None and e is not None:
+        return payload if a == e and ap == ep and (au is None or au == eu) else None
+    if contains_quote(payload, evidence):
+        return payload
+    return None
+
+
 def parse_output(text, finish_reason, view):
     if finish_reason != "stop":
         return dict(answer=None, evidence=None, status="judge_length_or_incomplete")
@@ -59,21 +117,28 @@ def parse_output(text, finish_reason, view):
     if not isinstance(answer, str) or not isinstance(evidence, str) or \
             not answer.strip() or not evidence.strip() or len(answer) > 300 or len(evidence) > 500:
         return dict(answer=None, evidence=None, status="invalid_schema")
-    if compact(evidence) not in compact(view["response"]):
+    if compact(evidence) not in compact(view["response"]) and not contains_quote(evidence, view["response"]):
         return dict(answer=None, evidence=evidence, status="evidence_not_in_response")
     if view["question_type"] == "multiple-choice":
-        if answer not in view["choices"]:
+        answer = option_letter(answer, view["choices"])
+        if answer is None:
             return dict(answer=None, evidence=evidence, status="invalid_option")
         # Reject direct contradictions; paraphrased option text remains model-based mapping.
-        literal = compact(evidence).strip("()[] .")
+        literal = quote_key(evidence).strip("()[] .")
         if literal in view["choices"] and literal != answer:
             return dict(answer=None, evidence=evidence, status="option_evidence_conflict")
         matches = [key for key, option in view["choices"].items()
-                   if compact(option).casefold() == compact(evidence).casefold()]
+                   if quote_key(option).casefold() == quote_key(evidence).casefold()]
         if len(matches) == 1 and matches[0] != answer:
             return dict(answer=None, evidence=evidence, status="option_evidence_conflict")
-    elif compact(answer) != compact(evidence):
-        return dict(answer=None, evidence=evidence, status="answer_not_verbatim")
+        selected = re.findall(r"(?:final\s+answer|correct\s+answer|answer|option|choice)\s*:\s*\(?([A-Z])\)?(?:[.\s]|$)",
+                              quote_key(evidence), flags=re.I)
+        if selected and selected[-1].upper() in view["choices"] and selected[-1].upper() != answer:
+            return dict(answer=None, evidence=evidence, status="option_evidence_conflict")
+    else:
+        answer = supported_open_answer(answer, evidence)
+        if answer is None:
+            return dict(answer=None, evidence=evidence, status="answer_not_verbatim")
     return dict(answer=answer.strip(), evidence=evidence, status="extracted")
 
 
@@ -148,11 +213,14 @@ def arithmetic(expression):
 
 UNIT = re.compile(r"\s*(?:\{|\\(?:text|mathrm)\{)?(?:kΩ|Ω|ohms?|kOhms?|mA|A|mV|V|kW|W|"
                   r"μF|uF|µF|F|ft/s|m/s|msec|ms|seconds?|s|weeks?|grams?|kg|g|"
-                  r"units|million|dollars?)(?:\})?\s*$", re.I)
+                  r"Mbps|units|million|dollars?)(?:\})?\s*$", re.I)
 
 
 def scalar(value):
     text = surface(value).replace(r"\,", " ").replace(r"\;", " ").replace(r"\!", "")
+    text = text.replace(r"\mu", "μ").replace(r"\Omega", "Ω").replace("\\ ", " ")
+    text = re.sub(r"\{\s*(A|mA|V|mV|F|W|k|Ω)\s*\}", r"\1", text)
+    text = re.sub(r"\s+(?=[μk]?[AFΩ]\s*$)", "", text)
     text = re.sub(r"[{}]", "", text) if not re.search(r"\\(?:d?frac|sqrt)", text) else text
     # Explicit figure labels and a simple variable assignment are answer formatting.
     text = re.sub(r"^(?:step|region|arrow)\s+", "", text, flags=re.I)
@@ -192,6 +260,7 @@ def score_open(answer, reference):
     if answer is None:
         return dict(exact_correct=False, precision_correct=False, matched_reference=None,
                     match="unparsed", unit_review_required=False)
+    answer = answer_payload(answer)
     predicted, pred_unit, _, pred_percent = scalar(answer)
     exact = rounded = False
     matched = None
@@ -222,7 +291,8 @@ def score_open(answer, reference):
             unit_review |= pred_unit is not None and gold_unit is None
         exact |= pair_exact
         rounded |= pair_rounded
-        if pair_rounded: matched = ref
+        if pair_exact or (pair_rounded and matched is None): matched = ref
+        if pair_exact: break
     return dict(exact_correct=exact, precision_correct=rounded, matched_reference=matched,
                 match="exact" if exact else "reference_precision" if rounded else "mismatch",
                 unit_review_required=unit_review)
