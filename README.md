@@ -210,6 +210,27 @@ python scripts/evaluate_local_model_judge.py \
   --output-dir results/qwen_free3407_ctx65536/local_model_qwen3_8b_awq_yarn_v1
 ```
 
+### 주관식 정답 위치 민감도 점검
+
+공개 Qwen 방식은 주관식 채점 시 참조 정답을 항상 선택지 A에 둡니다. 아래 점검은 **저장된 동일한 VLM 답변 53개**를 사용하여 참조 정답을 B로 옮기고 `Other Answers`를 A에 둔 상태에서 규칙 추출과 미파싱 대상 로컬 모델 추출을 다시 적용합니다. VLM 추론과 API 호출은 발생하지 않습니다. 원본 로컬 judge와 동일한 모델 스냅샷·문맥·출력 설정을 검사하고, 정답 위치만 바뀐 쌍의 판정을 비교합니다.
+
+```bash
+python scripts/audit_open_judge_bias.py \
+  --inference-dir results/qwen_free3407_tok4096_ctx65536/inference \
+  --original-local-dir results/qwen_free3407_tok4096_ctx65536/local_model_awq_yarn_v1 \
+  --output-dir results/qwen_free3407_tok4096_ctx65536/open_position_audit_v1 \
+  --preflight-only
+
+python scripts/audit_open_judge_bias.py \
+  --inference-dir results/qwen_free3407_tok4096_ctx65536/inference \
+  --original-local-dir results/qwen_free3407_tok4096_ctx65536/local_model_awq_yarn_v1 \
+  --output-dir results/qwen_free3407_tok4096_ctx65536/open_position_audit_v1
+
+cat results/qwen_free3407_tok4096_ctx65536/open_position_audit_v1/report.md
+```
+
+`original_only`는 정답이 A일 때만 맞은 문항 수, `swapped_only`는 B일 때만 맞은 문항 수입니다. `always_A`는 위치를 바꿔도 A를 고른 문항 수입니다. `cases.jsonl`에 문항별 원본·교체 판정과 답변 끝부분을 기록하므로 위치에 민감한 사례를 직접 검토할 수 있습니다. 위치 민감도만으로 어느 판정이 의미상 옳은지는 확정할 수 없습니다. 8192토큰 실행도 같은 명령에서 세 경로의 `tok4096`을 `tok8192`로 바꿔 점검할 수 있습니다.
+
 - `manifest.json`: 데이터 해시·선택 ID·모델·sampling·소스 해시. 변경된 설정으로 같은 폴더에 이어 쓰지 않습니다.
 - `preflight.json`: 문항별 입력 토큰·프롬프트/이미지 해시와 필요 문맥.
 - `predictions.jsonl`: Qwen 원문, 종료 원인, 실제 입출력 토큰, 문항별 추론 초.
