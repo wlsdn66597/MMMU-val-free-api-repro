@@ -39,11 +39,15 @@ def write_report(out, rows, records, scope):
         n = len(items)
         exact = sum(item["score"]["exact_correct"] for item in items)
         precision = sum(item["score"]["precision_correct"] for item in items)
+        equivalence = sum(item["score"]["equivalence_correct"] for item in items)
         return dict(n=n, exact_correct=exact, precision_correct=precision,
+                    equivalence_correct=equivalence,
+                    equivalence_accuracy_pct=round(100*equivalence/n, 4) if n else None,
                     exact_accuracy_pct=round(100*exact/n, 4) if n else None,
                     precision_accuracy_pct=round(100*precision/n, 4) if n else None,
                     unparsed=sum(item["answer"] is None for item in items),
                     statuses=dict(Counter(item["status"] for item in items)),
+                    methods=dict(Counter(item.get("method", "unknown") for item in items)),
                     unit_review_required=sum(item["score"]["unit_review_required"] for item in items))
     summary = dict(policy=POLICY, scope=scope, full_validation=scope == "all", state="complete",
                    references_sha256=digest([dict(id=row["id"], reference=row["answer"]) for row in rows]),
@@ -54,24 +58,49 @@ def write_report(out, rows, records, scope):
     temporary = out / "scored_records.jsonl.tmp"
     temporary.write_text("".join(json.dumps(item, ensure_ascii=False)+"\n" for item in scored), encoding="utf-8")
     temporary.replace(out / "scored_records.jsonl")
+    sources = {row["id"]: row for row in rows}
+    review = []
+    for item in scored:
+        source = sources[item["id"]]
+        reasons = list(item["score"]["review_reasons"])
+        if item["answer"] is None: reasons.append(item["status"])
+        if source["finish_reason"] == "length" and item["answer"] is not None:
+            reasons.append("accepted_length_limited_final")
+        if item["score"]["equivalence_rule"]: reasons.append(item["score"]["equivalence_rule"])
+        if item["score"]["unit_review_required"]: reasons.append("unit_without_reference_unit")
+        if reasons:
+            review.append(dict(item, review_reasons=reasons, question=source["question"],
+                               choices=source["choices"], response=source["raw_response"],
+                               vlm_finish_reason=source["finish_reason"]))
+    (out / "review_cases.jsonl").write_text("".join(json.dumps(item, ensure_ascii=False)+"\n"
+                                                     for item in review), encoding="utf-8")
+    summary["review_cases"] = len(review)
+    save_json(out / "summary.json", summary)
     lines = ["# Reference-blind local final-answer extraction", "",
              "All selected responses were extracted again; no legacy Qwen rule result is reused.",
              "The extractor receives no reference answers or correctness labels. No VLM regeneration or API calls.", "",
-             "| Group | N | Exact correct | Exact accuracy % | Precision correct | Precision accuracy % | Unparsed |",
-             "|---|---:|---:|---:|---:|---:|---:|"]
+             "| Group | N | Exact correct | Exact accuracy % | Precision correct | Precision accuracy % | Equivalence correct | Equivalence accuracy % | Unparsed |",
+             "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for name in ("overall", "multiple_choice", "open"):
         value = summary[name]
         lines.append(f"| {name} | {value['n']} | {value['exact_correct']} | {value['exact_accuracy_pct']} | "
-                     f"{value['precision_correct']} | {value['precision_accuracy_pct']} | {value['unparsed']} |")
+                     f"{value['precision_correct']} | {value['precision_accuracy_pct']} | "
+                     f"{value['equivalence_correct']} | {value['equivalence_accuracy_pct']} | {value['unparsed']} |")
     lines.extend(["", "Exact: normalized text aliases or exact scalar arithmetic equality.",
                   "Precision: also allows scalar answers rounded to a decimal reference's written precision (half-up). "
                   "Integer and fractional references stay exact; no relative tolerance is used.",
+                  "Equivalence: precision scoring plus phase modulo 360 when the question explicitly asks "
+                  "for phase in degrees and does not prescribe a range. Other semantic matches are not accepted automatically.",
+                  "Explicit final blocks are extracted directly from the original response. Model mappings require "
+                  "quoted commitment evidence; subsequent withdrawal prevents extraction.",
                   "Aliases in a serialized list are compared individually. Only extracted final answers are scored, "
                   "never numbers/words anywhere in the full reasoning.",
                   "Units are not converted. An explicit reference unit must match; if the reference has no unit, "
                   "recognized answer units are stripped from magnitude matching and flagged for review. Percent is converted to a ratio.",
                   f"Unit review cases: {summary['overall']['unit_review_required']}",
-                  "Unparsed/invalid JSON/unverifiable evidence count as wrong. Model extraction is still fallible; inspect evidence.",
+                  f"Review cases: {len(review)}; see review_cases.jsonl for unparsed responses, accepted length-limited "
+                  "finals, unit assumptions, equivalence cases and semantic review flags.",
+                  "Unparsed cases count as wrong. Extraction is still fallible; inspect evidence and the full response.",
                   "This is an additional evaluation policy, not the official Qwen judge score."])
     (out / "report.md").write_text("\n".join(lines)+"\n", encoding="utf-8")
     return summary

@@ -6,7 +6,7 @@ import json
 import re
 import unicodedata
 
-POLICY = "blind-final-answer-v3"
+POLICY = "blind-final-answer-v4"
 
 
 def extraction_view(row):
@@ -102,7 +102,7 @@ def supported_open_answer(answer, evidence):
     return None
 
 
-def parse_output(text, finish_reason, view):
+def parse_cached_output(text, finish_reason, view):
     if finish_reason != "stop":
         return dict(answer=None, evidence=None, status="judge_length_or_incomplete")
     try:
@@ -140,6 +140,144 @@ def parse_output(text, finish_reason, view):
         if answer is None:
             return dict(answer=None, evidence=evidence, status="answer_not_verbatim")
     return dict(answer=answer.strip(), evidence=evidence, status="extracted")
+
+
+# Preserve build_prompt(): cached generations must retain their real prompt hash.
+# These checks read only extraction_view(), never references or correctness.
+FINAL_MARKER = re.compile(
+    r"\b(?:final\s+answer|correct\s+(?:answer|option|choice)|"
+    r"(?:the\s+)?answer|my\s+(?:final\s+)?(?:choice|answer))"
+    r"(?:\s*\*{0,2})\s*(?::|\bis\b\s*:?)\s*(?:\*{0,2})", re.I)
+COMMITMENT = re.compile(
+    r"\b(?:I\s+(?:will|would)\s+(?:choose|select)|I['’]ll\s+go\s+with)\s*", re.I)
+WITHDRAWAL = re.compile(
+    r"\b(?:wait\b|reconsider\w*|made\s+a\s+mistake|I['’]ve\s+now\s+(?:found|concluded)|"
+    r"(?:answer|choice|option)\s+(?:is|was)\s+(?:wrong|incorrect|not\s+(?:correct|listed))|"
+    r"(?:cannot|can't|unable\s+to)\s+(?:determine|answer)|I\s*(?:am|'m|’m)\s+not\s+sure)\b", re.I)
+REOPENED_REASONING = re.compile(
+    r"\b(?:perhaps|unless|let\s+me|let['’]s|further\s+calculations)\b|"
+    r"^\s*(?:#+\s*)?(?:but|actually|another\s+(?:idea|thought)|if)\b", re.I | re.M)
+
+
+def option_key(text):
+    text = quote_key(surface(text)).casefold()
+    # Presentation differences only; no synonym/semantic option matching.
+    for latex, symbol in ((r"\Delta", "Δ"), (r"\neq", "≠"), (r"\leq", "≤"), (r"\geq", "≥")):
+        text = text.replace(latex.casefold(), symbol.casefold())
+    return re.sub(r"\s*([,=<>≠≤≥])\s*", r"\1", text)
+
+
+def source_candidate(response, start):
+    """First answer line following a marker, with exact source offsets."""
+    cursor = start
+    for line in response[start:].splitlines(keepends=True)[:10]:
+        raw = line.strip()
+        value = re.sub(r"^[\s>#✅*`]+", "", raw).strip()
+        if value and value not in ("---", "—", r"\[", "$$", r"\]") and not value.endswith("?"):
+            offset = cursor + line.index(raw)
+            return raw, offset, offset + len(raw)
+        cursor += len(line)
+    return None
+
+
+def final_value(payload, view):
+    value = answer_payload(re.sub(r"^[\s>#✅*`]+", "", payload))
+    if re.search(r"\b(?:maybe|perhaps|possibly|might|if\s+forced|as\s+a\s+guess)\b", value, re.I) or \
+            re.search(r"\b[A-Z]\s+or\s+[A-Z]\b", value):
+        return None
+    if view["question_type"] != "multiple-choice":
+        return value if value and len(value) <= 300 else None
+    value = quote_key(value)
+    if re.search(r"\b(?:but|though|although)\b.*\bnot\s+correct\b", value, re.I):
+        return None
+    suffix = re.fullmatch(r"(.+?)\s*→\s*(?:option|choice)\s+([A-Z])", value, re.I)
+    if suffix:
+        letter = suffix[2].upper()
+        return letter if letter in view["choices"] and option_key(suffix[1]) == option_key(view["choices"][letter]) else None
+    label = re.match(r"^(?:option\s+|choice\s+)?\(?([A-Z])\)?(?:[.:)]|\s|$)", value)
+    if label:
+        letter = label[1]
+        if letter not in view["choices"]:
+            return None
+        body = re.sub(r"^[.:)\s]+", "", value[label.end():])
+        # An explicit label is authoritative unless its body names another option.
+        conflicts = [key for key, option in view["choices"].items() if option_key(body) == option_key(option)]
+        if conflicts and letter not in conflicts:
+            return None
+        if view["finish_reason"] == "length" and value.rstrip().endswith(("=", ":", ",", "\\")):
+            return None
+        return letter
+    matches = [key for key, option in view["choices"].items() if option_key(value) == option_key(option)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def terminal_box(response):
+    """A complete last box followed only by display markup or a recognized unit."""
+    boxes = list(re.finditer(r"\\boxed\s*\{", response))
+    if not boxes:
+        return None
+    start = boxes[-1].start()
+    depth, end = 1, boxes[-1].end()
+    while end < len(response) and depth:
+        depth += (response[end] == "{") - (response[end] == "}")
+        end += 1
+    if depth:
+        return None
+    suffix = response[end:]
+    remainder = quote_key(suffix).strip("* .✅")
+    if remainder and not UNIT.fullmatch(remainder):
+        return None
+    return response[start:].strip()
+
+
+def parse_output(text, finish_reason, view):
+    """Prefer an explicit original conclusion; accept model mapping only with commitment evidence."""
+    response = view["response"]
+    markers = list(FINAL_MARKER.finditer(response)) + list(COMMITMENT.finditer(response))
+    markers.sort(key=lambda match: match.start())
+    if markers:
+        marker = markers[-1]
+        candidate = source_candidate(response, marker.end())
+        if candidate:
+            evidence, start, end = candidate
+            if WITHDRAWAL.search(response[end:]):
+                return dict(answer=None, evidence=evidence, status="final_withdrawn", method="source_marker")
+            if view["finish_reason"] == "length" and REOPENED_REASONING.search(response[end:]):
+                return dict(answer=None, evidence=evidence, status="unfinished_after_final", method="source_marker")
+            answer = final_value(evidence, view)
+            if answer is not None:
+                return dict(answer=answer, evidence=evidence, status="extracted", method="source_marker")
+        # Never fall back to an earlier answer if the last final block is ambiguous.
+        return dict(answer=None, evidence=candidate[0] if candidate else None,
+                    status="ambiguous_final_block", method="source_marker")
+    short = response.strip()
+    boxed = terminal_box(response) if view["finish_reason"] == "stop" else None
+    if boxed:
+        answer = final_value(boxed, view)
+        if answer is not None:
+            return dict(answer=answer, evidence=boxed, status="extracted", method="terminal_box")
+    if view["finish_reason"] == "stop" and "\n" not in short and len(short) <= 100:
+        answer = option_letter(short, view["choices"]) if view["question_type"] == "multiple-choice" else final_value(short, view)
+        if answer is not None and (view["question_type"] == "multiple-choice" or
+                scalar(answer)[0] is not None or re.fullmatch(r"[\w-]+", answer)):
+            return dict(answer=answer, evidence=short, status="extracted", method="short_response")
+    cached = parse_cached_output(text, finish_reason, view)
+    if cached["answer"] is None:
+        return dict(cached, method="cached_model")
+    # Bare letters, option lists and reasoning intros do not establish commitment.
+    # For unlabeled prose conclusions require a sentence that asserts the answer.
+    evidence = cached["evidence"]
+    commitment = re.search(r"\b(?:therefore|thus|hence|so)\b[^\n]*?\b(?:is|are|equals)\b|"
+                           r"\b(?:the\s+)?(?:place|formula|result|value|compound)\b[^\n]*?\bis\b",
+                           quote_key(evidence), re.I)
+    if not commitment or view["finish_reason"] != "stop":
+        return dict(answer=None, evidence=evidence, status="no_verified_commitment", method="cached_model")
+    # Require the actual quoted conclusion and reject later reconsideration.
+    key = quote_key(response)
+    position = key.rfind(quote_key(evidence))
+    if position < 0 or WITHDRAWAL.search(key[position+len(quote_key(evidence)):]):
+        return dict(answer=None, evidence=evidence, status="final_withdrawn", method="cached_model")
+    return dict(cached, method="cached_committed_sentence")
 
 
 def aliases(reference):
@@ -298,6 +436,35 @@ def score_open(answer, reference):
                 unit_review_required=unit_review)
 
 
+def score_open_context(answer, reference, question):
+    """Keep exact/precision scores intact; expose narrowly defined equivalence separately."""
+    score = score_open(answer, reference)
+    score.update(equivalence_correct=score["precision_correct"], equivalence_rule=None,
+                 review_reasons=[])
+    if answer is None or score["precision_correct"]:
+        return score
+    # Phase is periodic only when degrees are explicit and no canonical range is required.
+    phase = re.search(r"\bphase\b", question, re.I) and re.search(r"\bdegrees?\b|°", question, re.I)
+    restricted = re.search(r"\brange\b|\binterval\b|\bprincipal\b|\bbetween\b|\[\s*-?\d+\s*,", question, re.I)
+    if phase and not restricted:
+        def degrees(value):
+            value = re.sub(r"(?:\^\s*\\circ|°|\s+degrees?)$", "", surface(value), flags=re.I)
+            n, unit, _, percent = scalar(value)
+            return n if unit is None and not percent else None
+        predicted = degrees(answer)
+        for ref in aliases(reference):
+            gold = degrees(ref)
+            if predicted is not None and gold is not None and (predicted-gold) % Decimal(360) == 0:
+                score.update(equivalence_correct=True, equivalence_rule="phase_modulo_360")
+                break
+    # These need domain/semantic review, not an automatic larger tolerance or gold substring match.
+    if re.search(r"\bvariance\b", question, re.I) and re.search(r"\b(?:unfavorable|favorable)\b", answer, re.I):
+        score["review_reasons"].append("variance_direction_qualifier")
+    if re.search(r"\b(?:place|location|where)\b", question, re.I):
+        score["review_reasons"].append("location_granularity")
+    return score
+
+
 def score_records(rows, records):
     by_id = {record["id"]: record for record in records}
     scored = []
@@ -310,9 +477,10 @@ def score_records(rows, records):
             correct = answer is not None and answer == row["answer"]
             score = dict(exact_correct=correct, precision_correct=correct,
                          match="exact" if correct else "unparsed" if answer is None else "mismatch",
-                         unit_review_required=False)
+                         unit_review_required=False, equivalence_correct=correct,
+                         equivalence_rule=None, review_reasons=[])
         else:
-            score = score_open(answer, row["answer"])
+            score = score_open_context(answer, row["answer"], row["question"])
         scored.append(dict(record, subject=row["subject"], question_type=row["question_type"],
                            reference=row["answer"], score=score))
     return scored

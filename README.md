@@ -286,6 +286,37 @@ cat "$RUN/blind_all_v2_revalidated/report.md"
 
 v3는 객관식 답과 원래 선택지 양쪽의 끝 마침표에 같은 정규화를 적용합니다. `B. Lateral geniculate.`와 선택지 `Lateral geniculate.`처럼 동일한 내용이 v2에서 거부된 비교 오류를 수정합니다. v2 결과가 이미 있으면 `--cached-dir "$RUN/blind_all_v2_revalidated" --output-dir "$RUN/blind_all_v3_revalidated"`로 원래 judge 원문을 다시 재검증할 수 있습니다. 답이 같은지 정답으로 판단하는 방식이나 인용 검사는 변경하지 않습니다.
 
+#### v4: 원문 최종 결론과 인용 근거를 함께 검증
+
+v4는 원문 마지막 `Final Answer`/`Correct answer is:` 등 명시적인 답 구간을 직접 읽습니다. 답이 명확하면 judge의 잘못된 인용이나 JSON 생성 실패 때문에 버리지 않습니다. 인용은 원문에서 그대로 복사합니다. 별도 답 표지가 없는 경우에는 완결된 짧은 응답이나 응답 끝의 완전한 `\boxed{...}`를 허용합니다. 그 외 judge의 추출은 원문 인용에 결론을 진술하는 문장이 있어야 합니다. 선택지 목록, 회로 노드·음이름의 문자, 중간 계산의 수치는 인용이 실제 존재하더라도 최종 답으로 인정하지 않습니다.
+
+마지막 답 구간이 모호하면 이전 답으로 되돌아가지 않습니다. 뒤에서 답을 번복한 응답도 미파싱으로 남깁니다. 길이 제한에 걸린 응답은 명시적인 결론 이후에 재검토를 시작한 흔적이 있으면 제외하고, 채택한 경우에도 검토 목록에 기록합니다. 이 검사는 표현 규칙에 기반하므로 유효한 답을 놓치거나 잘못 받아들일 수 있습니다. 미파싱을 모두 모델의 풀이 오류로 해석하거나 v4 점수를 확정적인 실제 성능으로 해석하지 않습니다.
+
+주관식의 Exact/Precision 정의는 유지합니다. 별도 `Equivalence` 열은 질문이 각도 단위의 위상을 요구하고 범위를 지정하지 않았을 때만 360도 주기 동치를 추가합니다. 일반 각도·온도·라디안에는 이 규칙을 적용하지 않습니다. 회계의 Favorable/Unfavorable 표기, 지명 범위 차이 등 의미 검토가 필요한 사례에는 검토 표시를 남기며 자동으로 정답을 추가하지 않습니다. 정답은 추출 이후 채점 단계에서만 사용합니다.
+
+아래 명령은 v1~v3의 완성된 blind 추출 캐시를 CPU에서 재검증합니다. **VLM 재추론, GPU 모델 로딩, 새 judge 호출과 API 호출은 없습니다.** 생성 프롬프트를 변경하지 않아 기존 입력·프롬프트 해시를 검증할 수 있습니다. 기존 결과 폴더에는 덮어쓰지 않습니다.
+
+```bash
+cd ~/mmdl/MMMU-val-free-api-repro
+git pull
+RUN=results/qwen_free3407_tok4096_ctx65536
+
+python scripts/revalidate_blind_extractions.py \
+  --inference-dir "$RUN/inference" \
+  --cached-dir "$RUN/blind_all_v3_revalidated" \
+  --output-dir "$RUN/blind_all_v4_revalidated"
+
+cat "$RUN/blind_all_v4_revalidated/report.md"
+```
+
+`--cached-dir`에는 본인이 이미 완료한 `blind_manifest.json`·`extractions.jsonl`이 있는 폴더를 지정합니다. `blind_all_v1`이나 `blind_all_v2_revalidated`도 가능합니다. 다른 입력, 불완전한 캐시, 생성 프롬프트 불일치는 중단합니다.
+
+- `answer_changes.jsonl`: 이전/새 추출 답, 상태, 추출 방법. 정답은 포함하지 않습니다.
+- `review_cases.jsonl`: 미파싱, 채택된 길이 제한 응답, 단위 가정, 위상 동치 및 의미 검토 사례의 원문과 채점 결과. 중복 사유를 묶어 한 문항당 한 행으로 저장합니다.
+- `summary.json`: 추출 방법·상태, 복구/제외/변경 수, Exact/Precision/Equivalence 점수.
+
+새 점수에는 표기 오류 복구와 근거가 약한 추출 제외가 함께 반영되므로 정확도가 낮아질 수 있습니다. 점수 상승 여부보다 `answer_changes.jsonl`과 `review_cases.jsonl`에서 최종 답을 충실히 추출했는지 검토합니다. 이 평가 정책은 공개 Qwen judge 점수와 구분해 기록합니다.
+
 단위 변환은 수행하지 않습니다. 기준답에 단위가 있으면 일치해야 하고, 기준답이 단위 없는 수치이면 인식 가능한 응답 단위를 제외한 크기를 비교하되 단위 검토 대상으로 기록합니다. 백분율은 비율로 변환합니다. 미파싱·무효 JSON·원문에 없는 인용은 오답에 포함하고 상태별 수를 보고합니다. 인용이 있다고 추출이 항상 옳은 것은 아니므로 결과를 수동 검토해야 합니다. 이 점수는 정답 추출과 채점을 분리한 추가 평가이며 기존 공식 방식 점수와 구분해 기록합니다.
 
 - `manifest.json`: 데이터 해시·선택 ID·모델·sampling·소스 해시. 변경된 설정으로 같은 폴더에 이어 쓰지 않습니다.

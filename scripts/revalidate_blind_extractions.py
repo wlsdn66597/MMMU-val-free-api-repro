@@ -24,7 +24,7 @@ def run(args):
         raise ValueError("Cached extraction is locked; wait until its process has finished")
     manifest_path = cached / "blind_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("policy") not in ("blind-final-answer-v1", "blind-final-answer-v2", POLICY):
+    if manifest.get("policy") not in ("blind-final-answer-v1", "blind-final-answer-v2", "blind-final-answer-v3", POLICY):
         raise ValueError("Only reference-blind extraction caches can be revalidated")
     scope = manifest["scope"]
     if scope not in ("all", "open", "multiple-choice"):
@@ -37,7 +37,7 @@ def run(args):
         raise ValueError("Cached inputs do not match saved VLM responses")
     cache_path = cached / "extractions.jsonl"
     original = read_jsonl(cache_path)
-    records, seen, transitions = [], set(), Counter()
+    records, seen, transitions, changes = [], set(), Counter(), []
     for old in original:
         sample_id = old["id"]
         if sample_id not in views or sample_id in seen:
@@ -53,6 +53,9 @@ def run(args):
         records.append(record)
         seen.add(sample_id)
         transitions[f"{old['status']} -> {parsed['status']}"] += 1
+        if old["answer"] != parsed["answer"]:
+            changes.append(dict(id=sample_id, old_answer=old["answer"], new_answer=parsed["answer"],
+                                old_status=old["status"], new_status=parsed["status"], method=parsed["method"]))
     if seen != set(views):
         raise ValueError("Cached extraction is incomplete; no final accuracy reported")
     identity = dict(policy=POLICY, inputs_sha256=source_sha, scope=scope,
@@ -72,14 +75,23 @@ def run(args):
         temporary.replace(target)
         summary = write_report(out, rows, records, scope)
         summary["revalidation"] = dict(mode="cpu_cached_revalidation", new_model_calls=0,
-                                        status_transitions=dict(transitions))
+                                        status_transitions=dict(transitions), answer_changes=len(changes),
+                                        recovered=sum(item["old_answer"] is None for item in changes),
+                                        withheld=sum(item["new_answer"] is None for item in changes),
+                                        changed_answer=sum(item["old_answer"] is not None and item["new_answer"] is not None
+                                                           for item in changes))
+        (out / "answer_changes.jsonl").write_text("".join(json.dumps(item, ensure_ascii=False)+"\n"
+                                                           for item in changes), encoding="utf-8")
         save_json(out / "summary.json", summary)
         save_json(out / "progress.json", dict(state="complete", completed=len(records), n=len(rows)))
         with (out / "report.md").open("a", encoding="utf-8") as report:
             report.write("\nCPU revalidation of unchanged cached judge outputs; new model calls: 0.\n")
-            report.write("Only presentation markup, unambiguous option labels/text, and supported "
-                         "answer substrings or format-equivalent scalar expressions are normalized. "
-                         "Missing quotes, conflicting choices, and unsupported answer rewrites remain unparsed.\n")
+            report.write("Explicit original final blocks are read directly; cached model mappings require "
+                         "verified commitment evidence. Withdrawn conclusions remain unparsed. "
+                         "The generation prompt and cached raw judge output are unchanged.\n")
+            report.write(f"Recovered: {summary['revalidation']['recovered']}; withheld: "
+                         f"{summary['revalidation']['withheld']}; changed answer: "
+                         f"{summary['revalidation']['changed_answer']}. See answer_changes.jsonl.\n")
             for transition, count in sorted(transitions.items()):
                 report.write(f"- {transition}: {count}\n")
     return summary

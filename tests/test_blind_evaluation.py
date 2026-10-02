@@ -6,7 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from mmmu_repro.blind_evaluation import build_prompt, extraction_view, parse_output, score_open
+from mmmu_repro.blind_evaluation import (build_prompt, extraction_view, parse_output,
+                                        parse_cached_output, score_open, score_open_context)
 from mmmu_repro.common import digest, read_jsonl, save_json
 from scripts.evaluate_blind_local_judge import run
 from scripts.revalidate_blind_extractions import run as revalidate
@@ -28,6 +29,8 @@ class BlindEvaluationTests(unittest.TestCase):
             build_prompt(dict(view, answer="gold"))
 
     def test_verbatim_evidence_and_option_consistency(self):
+        # Cache validation remains strict; the new source reader is tested separately.
+        parse_output = parse_cached_output
         view = extraction_view(self.row())
         self.assertEqual(parse_output('{"answer":"0.0252","evidence":"0.0252"}', "stop", view)["answer"], "0.0252")
         self.assertIsNone(parse_output('{"answer":"6.5","evidence":"6.5"}', "stop", view)["answer"])
@@ -56,7 +59,7 @@ class BlindEvaluationTests(unittest.TestCase):
 
     def test_supported_answer_formatting_without_gold(self):
         def extract(answer, evidence, response, **values):
-            return parse_output(json.dumps(dict(answer=answer, evidence=evidence)), "stop",
+            return parse_cached_output(json.dumps(dict(answer=answer, evidence=evidence)), "stop",
                                 extraction_view(self.row(raw_response=response, **values)))
         self.assertEqual(extract("c", "Answer: c", "Answer: c")["answer"], "c")
         self.assertEqual(extract("$8", "✅ **Answer: $8**", "✅ **Answer: $8**")["answer"], "8")
@@ -103,6 +106,73 @@ class BlindEvaluationTests(unittest.TestCase):
         self.assertEqual(score_open("24/7", "['24/7','3.429']")["matched_reference"], "24/7")
         self.assertFalse(score_open("The current is 20 A; but the final answer is 100/3 V", "20")["precision_correct"])
         self.assertFalse(score_open("The answer might be 20 or 30", "20")["precision_correct"])
+
+    def test_original_final_recovers_bad_judge_quotes_without_gold(self):
+        for response, expected in ((r"Answer: $\boxed{\text{MgS}}$", "MgS"),
+                                   ("### Final Answer:\n> **Step 2**", "Step 2"),
+                                   ("✅ Final Answer: **3**", "3")):
+            row = self.row(raw_response=response)
+            result = parse_output('{"answer":"999","evidence":"invented quote"}', "stop", extraction_view(row))
+            self.assertEqual(result["answer"], expected)
+            self.assertIn(result["evidence"], response)
+            self.assertEqual(result, parse_output("invalid JSON", "length", extraction_view(dict(row, answer="999"))))
+
+    def test_last_final_and_reconsideration(self):
+        def read(response, reason="stop"):
+            return parse_output('{"answer":"A","evidence":"A"}', "stop", extraction_view(self.row(
+                question_type="multiple-choice", choices={"A":"red", "B":"blue"},
+                raw_response=response, finish_reason=reason)))
+        self.assertEqual(read("Final answer: A\nWait, I was wrong.\nFinal answer: B")["answer"], "B")
+        self.assertIsNone(read("Final answer: B\nBut I've now found this is wrong", "length")["answer"])
+        self.assertIsNone(read("Final answer: B — but that’s not correct", "length")["answer"])
+        self.assertIsNone(read("Final answer: A or B")["answer"])
+        self.assertIsNone(read("Final answer: A. blue")["answer"])
+        self.assertEqual(read("Final answer: B\nThis follows from the color in the image.", "length")["answer"], "B")
+        self.assertEqual(read("Final answer: B\n" + "This follows from the blue color. "*20, "length")["answer"], "B")
+        self.assertIsNone(read("Final answer: B\n" + "Further calculations continue. "*20, "length")["answer"])
+
+    def test_mentions_and_intermediate_values_are_not_commitment(self):
+        for response, answer, evidence in (("We are given Node A.\nNow derive its current", "A", "A"),
+                                          ("A. red\nB. blue\nLet's inspect the image", "A", "A. red"),
+                                          ("The melody goes C# then A#", "A", "A")):
+            view = extraction_view(self.row(question_type="multiple-choice", choices={"A":"red", "B":"blue"},
+                                           raw_response=response, finish_reason="length"))
+            self.assertIsNone(parse_output(json.dumps(dict(answer=answer,evidence=evidence)), "stop", view)["answer"])
+        view = extraction_view(self.row(raw_response="Compute x = 20. We still need the final result."))
+        self.assertIsNone(parse_output('{"answer":"20","evidence":"20"}', "stop", view)["answer"])
+        box = extraction_view(self.row(raw_response=r"We have finished the calculation.\n\boxed{24/7}"))
+        self.assertEqual(parse_output("invalid", "length", box)["answer"], "24/7")
+        incomplete = extraction_view(self.row(raw_response=r"First compute \boxed{24/7}. We still need the answer."))
+        self.assertIsNone(parse_output('{"answer":"24/7","evidence":"24/7"}', "stop", incomplete)["answer"])
+        # A complete one-line response is read as itself, never repaired to match a judge.
+        view = extraction_view(self.row(raw_response="10.3"))
+        self.assertEqual(parse_output('{"answer":"3","evidence":"10.3"}', "stop", view)["answer"], "10.3")
+
+    def test_explicit_labels_formatting_and_none_choice(self):
+        cases = [("Therefore the correct answer is:\n**B. blue**", {"A":"red", "B":"blue"}, "B"),
+                 (r"Final answer: \boxed{\text{B. } blue}", {"A":"red", "B":"blue"}, "B"),
+                 ("Final answer: **B. ΔT < 0, Q = 0**", {"A":"red", "B":r"$\Delta T<0,Q=0$"}, "B"),
+                 ("Correct answer: C. Not sure\nThe question has insufficient visual data.", {"A":"yes", "C":"Not sure"}, "C"),
+                 ("Final answer: None of the above", {"A":"red", "B":"blue"}, None)]
+        for response, choices, expected in cases:
+            view = extraction_view(self.row(question_type="multiple-choice", choices=choices, raw_response=response))
+            self.assertEqual(parse_output("{}", "stop", view)["answer"], expected)
+
+    def test_equivalence_does_not_change_exact_or_precision(self):
+        score = score_open_context("240", "-120", "Find the phase in angular degrees.")
+        self.assertFalse(score["exact_correct"])
+        self.assertFalse(score["precision_correct"])
+        self.assertTrue(score["equivalence_correct"])
+        for question in ("Find the temperature in degrees.", "Find the phase in radians.",
+                         "Find the phase in degrees in the range [-180,180]."):
+            self.assertFalse(score_open_context("240", "-120", question)["equivalence_correct"])
+        self.assertFalse(score_open_context("241", "-120", "Find the phase in degrees.")["equivalence_correct"])
+        variance = score_open_context("2960 Unfavorable", "2960", "Find the price variance.")
+        self.assertFalse(variance["equivalence_correct"])
+        self.assertIn("variance_direction_qualifier", variance["review_reasons"])
+        location = score_open_context("Clearwater Beach in Florida", "Florida", "What is this place?")
+        self.assertFalse(location["equivalence_correct"])
+        self.assertIn("location_granularity", location["review_reasons"])
 
     def test_cpu_revalidation_preserves_cache_and_rejects_stale_input(self):
         row = self.row(raw_response="✅ **Answer: $8**", answer="8")
